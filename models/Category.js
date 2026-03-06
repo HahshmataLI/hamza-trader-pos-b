@@ -32,10 +32,9 @@ const categorySchema = new mongoose.Schema(
         required: Boolean, // Is this field required?
         options: [String], // For select fields
         validation: {
-          // Field validation rules
+          // Field validation rules - removed pattern
           min: Number,
-          max: Number,
-          pattern: String,
+          max: Number
         },
       },
     ],

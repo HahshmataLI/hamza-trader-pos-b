@@ -59,5 +59,10 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ name: 'text', sku: 'text' });
 productSchema.index({ category: 1 });
 productSchema.index({ stock: 1 });
-
+productSchema.index({ name: 1 });
+productSchema.index({ sku: 1 });
+productSchema.index({ barcode: 1 });
+productSchema.index({ category: 1 });
+productSchema.index({ stock: 1 });
+productSchema.index({ isActive: 1 });
 module.exports = mongoose.model('Product', productSchema);

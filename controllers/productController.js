@@ -65,6 +65,9 @@ exports.getProducts = async (req, res, next) => {
     try {
         const { category, search, page = 1, limit = 50, lowStock } = req.query;
 
+        const pageNum = parseInt(page);
+        const limitNum = parseInt(limit);
+
         let query = { isActive: true };
 
         // Filter by category
@@ -72,51 +75,55 @@ exports.getProducts = async (req, res, next) => {
             query.category = category;
         }
 
-        // Search by name or SKU
+        // Faster search
         if (search) {
+            const searchRegex = new RegExp(search, 'i');
+
             query.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { sku: { $regex: search, $options: 'i' } },
-                { barcode: { $regex: search, $options: 'i' } }
+                { name: searchRegex },
+                { sku: searchRegex },
+                { barcode: searchRegex }
             ];
         }
 
-        // Filter low stock products
+        // Low stock filter
         if (lowStock === 'true') {
             query.$expr = { $lte: ['$stock', '$minStockLevel'] };
         }
 
-        // Execute query with lean for performance
-        const products = await Product.find(query)
-            .populate('category', 'name')
-            .select('-__v')
-            .limit(limit * 1)
-            .skip((page - 1) * limit)
-            .sort({ createdAt: -1 })
-            .lean();
+        // Run queries in parallel (faster)
+        const [products, total, inventorySummary] = await Promise.all([
 
-        const total = await Product.countDocuments(query);
+            Product.find(query)
+                .populate('category', 'name')
+                .select('-__v')
+                .sort({ createdAt: -1 })
+                .skip((pageNum - 1) * limitNum)
+                .limit(limitNum)
+                .lean(),
 
-        // Get inventory summary
-        const inventorySummary = await Product.aggregate([
-            { $match: query },
-            {
-                $group: {
-                    _id: null,
-                    totalProducts: { $sum: 1 },
-                    totalStockValue: { $sum: { $multiply: ['$stock', '$costPrice'] } },
-                    lowStockCount: {
-                        $sum: {
-                            $cond: [{ $lte: ['$stock', '$minStockLevel'] }, 1, 0]
-                        }
-                    },
-                    outOfStockCount: {
-                        $sum: {
-                            $cond: [{ $eq: ['$stock', 0] }, 1, 0]
+            Product.countDocuments(query),
+
+            Product.aggregate([
+                { $match: query },
+                {
+                    $group: {
+                        _id: null,
+                        totalProducts: { $sum: 1 },
+                        totalStockValue: { $sum: { $multiply: ['$stock', '$costPrice'] } },
+                        lowStockCount: {
+                            $sum: {
+                                $cond: [{ $lte: ['$stock', '$minStockLevel'] }, 1, 0]
+                            }
+                        },
+                        outOfStockCount: {
+                            $sum: {
+                                $cond: [{ $eq: ['$stock', 0] }, 1, 0]
+                            }
                         }
                     }
                 }
-            }
+            ])
         ]);
 
         res.json({
@@ -129,8 +136,8 @@ exports.getProducts = async (req, res, next) => {
                 outOfStockCount: 0
             },
             pagination: {
-                currentPage: parseInt(page),
-                totalPages: Math.ceil(total / limit),
+                currentPage: pageNum,
+                totalPages: Math.ceil(total / limitNum),
                 totalProducts: total
             }
         });
