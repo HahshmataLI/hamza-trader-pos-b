@@ -1,5 +1,30 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
+const imageService = require('../services/imageService');
+const barcodeService = require('../services/barcodeService');
+
+// Helper function to generate unique barcode
+const generateUniqueBarcode = async () => {
+    let barcode;
+    let isUnique = false;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (!isUnique && attempts < maxAttempts) {
+        barcode = barcodeService.generateBarcode();
+        const existingProduct = await Product.findOne({ barcode });
+        if (!existingProduct) {
+            isUnique = true;
+        }
+        attempts++;
+    }
+
+    if (!isUnique) {
+        throw new Error('Unable to generate unique barcode');
+    }
+
+    return barcode;
+};
 
 exports.createProduct = async (req, res, next) => {
     try {
@@ -23,14 +48,44 @@ exports.createProduct = async (req, res, next) => {
             }
         }
 
-        // Handle uploaded images
+        // Handle barcode
+        if (productData.barcode) {
+            // Format and validate barcode
+            productData.barcode = barcodeService.formatBarcode(productData.barcode);
+            
+            // Check if barcode already exists
+            const existingProduct = await Product.findOne({ barcode: productData.barcode });
+            if (existingProduct) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Barcode already exists'
+                });
+            }
+        } else {
+            // Generate unique barcode
+            productData.barcode = await generateUniqueBarcode();
+        }
+
+        // Handle uploaded images with optimization
         if (req.files && req.files.length > 0) {
-            productData.images = req.files.map(file => `/uploads/products/${file.filename}`);
+            const optimizedImages = await imageService.optimizeMultipleImages(req.files, {
+                width: 800,
+                height: 800,
+                quality: 80
+            });
+            productData.images = optimizedImages;
         }
 
         // Parse attributes if sent as string
         if (typeof productData.attributes === 'string') {
-            productData.attributes = JSON.parse(productData.attributes);
+            try {
+                productData.attributes = JSON.parse(productData.attributes);
+            } catch (e) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid attributes format'
+                });
+            }
         }
 
         // Validate required attributes
@@ -39,6 +94,11 @@ exports.createProduct = async (req, res, next) => {
             .map(attr => attr.label || attr.name);
 
         if (missingAttributes.length > 0) {
+            // Clean up uploaded images if validation fails
+            if (productData.images && productData.images.length > 0) {
+                await imageService.deleteMultipleImages(productData.images);
+            }
+            
             return res.status(400).json({
                 success: false,
                 error: `Missing required attributes: ${missingAttributes.join(', ')}`
@@ -53,10 +113,17 @@ exports.createProduct = async (req, res, next) => {
 
         res.status(201).json({
             success: true,
-            data: populatedProduct
+            data: populatedProduct,
+            message: 'Product created successfully'
         });
 
     } catch (error) {
+        // Clean up any uploaded images if there's an error
+        if (req.files && req.files.length > 0) {
+            await imageService.deleteMultipleImages(
+                req.files.map(f => `/uploads/products/${f.filename}`)
+            ).catch(err => console.error('Error cleaning up images:', err));
+        }
         next(error);
     }
 };
@@ -75,15 +142,27 @@ exports.getProducts = async (req, res, next) => {
             query.category = category;
         }
 
-        // Faster search
-        if (search) {
-            const searchRegex = new RegExp(search, 'i');
-
-            query.$or = [
-                { name: searchRegex },
-                { sku: searchRegex },
-                { barcode: searchRegex }
-            ];
+        // Optimized search - prioritize barcode for faster lookups
+        if (search && search.trim()) {
+            const searchRegex = new RegExp(search.trim(), 'i');
+            
+            // Check if search looks like a barcode (alphanumeric, specific format)
+            const isBarcodeSearch = /^[A-Z0-9-]{8,}$/i.test(search.trim());
+            
+            if (isBarcodeSearch) {
+                // Prioritize barcode search for faster results
+                query.$or = [
+                    { barcode: searchRegex },
+                    { sku: searchRegex },
+                    { name: searchRegex }
+                ];
+            } else {
+                query.$or = [
+                    { name: searchRegex },
+                    { sku: searchRegex },
+                    { barcode: searchRegex }
+                ];
+            }
         }
 
         // Low stock filter
@@ -91,9 +170,8 @@ exports.getProducts = async (req, res, next) => {
             query.$expr = { $lte: ['$stock', '$minStockLevel'] };
         }
 
-        // Run queries in parallel (faster)
+        // Run queries in parallel for better performance
         const [products, total, inventorySummary] = await Promise.all([
-
             Product.find(query)
                 .populate('category', 'name')
                 .select('-__v')
@@ -138,7 +216,9 @@ exports.getProducts = async (req, res, next) => {
             pagination: {
                 currentPage: pageNum,
                 totalPages: Math.ceil(total / limitNum),
-                totalProducts: total
+                totalProducts: total,
+                hasNextPage: pageNum < Math.ceil(total / limitNum),
+                hasPrevPage: pageNum > 1
             }
         });
 
@@ -170,6 +250,40 @@ exports.getProduct = async (req, res, next) => {
     }
 };
 
+exports.getProductByBarcode = async (req, res, next) => {
+    try {
+        const { barcode } = req.params;
+        
+        // Format barcode for consistent lookup
+        const formattedBarcode = barcodeService.formatBarcode(barcode);
+
+        const product = await Product.findOne({ 
+            barcode: formattedBarcode,
+            isActive: true 
+        })
+        .populate('category', 'name')
+        .lean();
+
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                error: 'Product not found with this barcode'
+            });
+        }
+
+        // Log for audit (optional)
+        console.log(`Product found by barcode: ${formattedBarcode}`);
+
+        res.json({
+            success: true,
+            data: product
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.updateProduct = async (req, res, next) => {
     try {
         let product = await Product.findById(req.params.id);
@@ -181,14 +295,59 @@ exports.updateProduct = async (req, res, next) => {
             });
         }
 
+        // Store old images for cleanup if new ones are uploaded
+        const oldImages = [...(product.images || [])];
+
+        // Handle barcode update
+        if (req.body.barcode && req.body.barcode !== product.barcode) {
+            // Format barcode
+            req.body.barcode = barcodeService.formatBarcode(req.body.barcode);
+            
+            // Check if new barcode already exists
+            const existingProduct = await Product.findOne({ 
+                barcode: req.body.barcode,
+                _id: { $ne: req.params.id }
+            });
+            
+            if (existingProduct) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Barcode already exists'
+                });
+            }
+        }
+
         // Handle image updates
         if (req.files && req.files.length > 0) {
-            req.body.images = req.files.map(file => `/uploads/products/${file.filename}`);
+            // Optimize and save new images
+            const optimizedImages = await imageService.optimizeMultipleImages(req.files, {
+                width: 800,
+                height: 800,
+                quality: 80
+            });
+            
+            // Combine with existing images if not replacing
+            if (req.body.replaceImages === 'true') {
+                req.body.images = optimizedImages;
+                // Delete old images
+                if (oldImages.length > 0) {
+                    await imageService.deleteMultipleImages(oldImages);
+                }
+            } else {
+                req.body.images = [...oldImages, ...optimizedImages];
+            }
         }
 
         // Parse attributes if sent as string
-        if (typeof req.body.attributes === 'string') {
-            req.body.attributes = JSON.parse(req.body.attributes);
+        if (req.body.attributes && typeof req.body.attributes === 'string') {
+            try {
+                req.body.attributes = JSON.parse(req.body.attributes);
+            } catch (e) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid attributes format'
+                });
+            }
         }
 
         // Update product
@@ -203,21 +362,24 @@ exports.updateProduct = async (req, res, next) => {
 
         res.json({
             success: true,
-            data: product
+            data: product,
+            message: 'Product updated successfully'
         });
 
     } catch (error) {
+        // Clean up any newly uploaded images if there's an error
+        if (req.files && req.files.length > 0) {
+            await imageService.deleteMultipleImages(
+                req.files.map(f => `/uploads/products/${f.filename}`)
+            ).catch(err => console.error('Error cleaning up images:', err));
+        }
         next(error);
     }
 };
 
 exports.deleteProduct = async (req, res, next) => {
     try {
-        const product = await Product.findByIdAndUpdate(
-            req.params.id,
-            { isActive: false },
-            { new: true }
-        );
+        const product = await Product.findById(req.params.id);
 
         if (!product) {
             return res.status(404).json({
@@ -225,6 +387,15 @@ exports.deleteProduct = async (req, res, next) => {
                 error: 'Product not found'
             });
         }
+
+        // Soft delete - deactivate product
+        product.isActive = false;
+        await product.save();
+
+        // Optional: Delete images (uncomment if you want to free up space)
+        // if (product.images && product.images.length > 0) {
+        //     await imageService.deleteMultipleImages(product.images);
+        // }
 
         res.json({
             success: true,
@@ -243,13 +414,14 @@ exports.getLowStockProducts = async (req, res, next) => {
             isActive: true
         })
         .populate('category', 'name')
-        .select('name sku stock minStockLevel costPrice mrp images')
+        .select('name sku barcode stock minStockLevel costPrice mrp images')
         .sort({ stock: 1 })
         .lean();
 
         res.json({
             success: true,
-            data: lowStockProducts
+            data: lowStockProducts,
+            count: lowStockProducts.length
         });
 
     } catch (error) {
@@ -279,8 +451,8 @@ exports.getProductsByCategory = async (req, res, next) => {
         })
         .populate('category', 'name level')
         .select('-__v')
-        .limit(limit * 1)
-        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
+        .skip((parseInt(page) - 1) * parseInt(limit))
         .sort({ createdAt: -1 })
         .lean();
 
@@ -294,8 +466,10 @@ exports.getProductsByCategory = async (req, res, next) => {
             data: products,
             pagination: {
                 currentPage: parseInt(page),
-                totalPages: Math.ceil(total / limit),
-                totalProducts: total
+                totalPages: Math.ceil(total / parseInt(limit)),
+                totalProducts: total,
+                hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
+                hasPrevPage: parseInt(page) > 1
             }
         });
 
@@ -306,7 +480,23 @@ exports.getProductsByCategory = async (req, res, next) => {
 
 exports.updateStock = async (req, res, next) => {
     try {
-        const { quantity, operation = 'set', reason } = req.body;
+        const { quantity, operation = 'set' } = req.body;
+
+        // Validate quantity
+        if (quantity === undefined || quantity === null) {
+            return res.status(400).json({
+                success: false,
+                error: 'Quantity is required'
+            });
+        }
+
+        const numQuantity = Number(quantity);
+        if (isNaN(numQuantity) || numQuantity < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Quantity must be a positive number'
+            });
+        }
 
         const product = await Product.findById(req.params.id);
         if (!product) {
@@ -319,10 +509,10 @@ exports.updateStock = async (req, res, next) => {
         let newStock;
         switch (operation) {
             case 'increment':
-                newStock = product.stock + quantity;
+                newStock = product.stock + numQuantity;
                 break;
             case 'decrement':
-                newStock = product.stock - quantity;
+                newStock = product.stock - numQuantity;
                 if (newStock < 0) {
                     return res.status(400).json({
                         success: false,
@@ -331,19 +521,55 @@ exports.updateStock = async (req, res, next) => {
                 }
                 break;
             default: // set
-                newStock = quantity;
+                newStock = numQuantity;
         }
 
         const updatedProduct = await Product.findByIdAndUpdate(
             req.params.id,
             { stock: newStock },
-            { new: true }
+            { new: true, runValidators: true }
         ).populate('category', 'name');
 
+        // Check if stock is now below minimum level
+        const isLowStock = newStock <= updatedProduct.minStockLevel;
+        
         res.json({
             success: true,
             data: updatedProduct,
-            message: `Stock updated successfully. New stock: ${newStock}`
+            message: `Stock updated successfully. New stock: ${newStock}`,
+            lowStock: isLowStock
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Bulk operations for efficiency
+exports.bulkUpdateStock = async (req, res, next) => {
+    try {
+        const { updates } = req.body; // Array of { productId, quantity, operation }
+
+        if (!Array.isArray(updates) || updates.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid updates format'
+            });
+        }
+
+        const bulkOps = updates.map(update => ({
+            updateOne: {
+                filter: { _id: update.productId, isActive: true },
+                update: { $inc: { stock: update.quantity } }
+            }
+        }));
+
+        const result = await Product.bulkWrite(bulkOps);
+
+        res.json({
+            success: true,
+            message: 'Bulk stock update completed',
+            modifiedCount: result.modifiedCount
         });
 
     } catch (error) {

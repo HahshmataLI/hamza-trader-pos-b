@@ -11,7 +11,12 @@ const productSchema = new mongoose.Schema({
         required: true,
         unique: true
     },
-    barcode: String,
+    barcode: {
+        type: String,
+        unique: true,
+        sparse: true, // Allows multiple null values but ensures uniqueness for non-null
+        index: true
+    },
     category: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Category',
@@ -56,13 +61,13 @@ const productSchema = new mongoose.Schema({
     timestamps: true
 });
 
-productSchema.index({ name: 'text', sku: 'text' });
+// Indexes for better query performance
+productSchema.index({ name: 'text', sku: 'text', barcode: 'text' });
 productSchema.index({ category: 1 });
 productSchema.index({ stock: 1 });
 productSchema.index({ name: 1 });
 productSchema.index({ sku: 1 });
 productSchema.index({ barcode: 1 });
-productSchema.index({ category: 1 });
-productSchema.index({ stock: 1 });
 productSchema.index({ isActive: 1 });
+
 module.exports = mongoose.model('Product', productSchema);

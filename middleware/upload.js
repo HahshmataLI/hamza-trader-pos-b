@@ -8,14 +8,10 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure storage
+// Configure temporary storage
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        let folder = 'products';
-        
-        if (req.baseUrl.includes('categories')) {
-            folder = 'categories';
-        }
+        let folder = 'temp'; // Store temporarily
         
         const dir = path.join(uploadDir, folder);
         if (!fs.existsSync(dir)) {
@@ -24,24 +20,26 @@ const storage = multer.diskStorage({
         cb(null, dir);
     },
     filename: (req, file, cb) => {
-        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+        const uniqueName = `temp-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
         cb(null, uniqueName);
     }
 });
 
 // File filter
 const fileFilter = (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    
+    if (allowedTypes.includes(file.mimetype)) {
         cb(null, true);
     } else {
-        cb(new Error('Only image files are allowed'), false);
+        cb(new Error('Only JPEG, PNG and WebP images are allowed'), false);
     }
 };
 
 const upload = multer({
     storage: storage,
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB
+        fileSize: 10 * 1024 * 1024 // 10MB max (we'll compress anyway)
     },
     fileFilter: fileFilter
 });
@@ -56,9 +54,13 @@ exports.handleUploadError = (err, req, res, next) => {
         if (err.code === 'LIMIT_FILE_SIZE') {
             return res.status(400).json({
                 success: false,
-                error: 'File too large. Maximum size is 5MB'
+                error: 'File too large. Maximum size is 10MB'
             });
         }
+        return res.status(400).json({
+            success: false,
+            error: err.message
+        });
     }
     next(err);
 };
