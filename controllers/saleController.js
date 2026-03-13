@@ -4,6 +4,7 @@ const Customer = require('../models/Customer');
 const NumberGenerator = require('../utils/numberGenerator');
 const mongoose = require('mongoose');
 
+// Add to saleController.js - Updated createSale function
 exports.createSale = async (req, res, next) => {
     try {
         const { customer, items, paymentMethod, notes, discount = 0, taxAmount = 0 } = req.body;
@@ -15,14 +16,32 @@ exports.createSale = async (req, res, next) => {
         // Validate items and prepare sale data
         let saleItems = [];
         let totalAmount = 0;
+        const stockUpdates = []; // Track for rollback if needed
 
         for (const item of items) {
-            const product = await Product.findById(item.product);
+            let product;
+            
+            // Check if item has barcode instead of product ID
+            if (item.barcode) {
+                // Find by barcode (case-insensitive, trimmed)
+                product = await Product.findOne({ 
+                    barcode: item.barcode.trim(),
+                    isActive: true 
+                });
+            } else if (item.product) {
+                // Find by product ID
+                product = await Product.findById(item.product);
+            } else {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Each item must have either product ID or barcode'
+                });
+            }
             
             if (!product) {
                 return res.status(404).json({
                     success: false,
-                    error: `Product not found: ${item.product}`
+                    error: `Product not found: ${item.barcode || item.product}`
                 });
             }
 
@@ -33,27 +52,36 @@ exports.createSale = async (req, res, next) => {
                 });
             }
 
-            if (item.unitSalePrice < product.minSalePrice) {
+            // Use provided sale price or default to MRP
+            const unitSalePrice = item.unitSalePrice || product.mrp;
+            
+            if (unitSalePrice < product.minSalePrice) {
                 return res.status(400).json({
                     success: false,
-                    error: `Sale price for ${product.name} is below minimum allowed: ${product.minSalePrice}`
+                    error: `Sale price for ${product.name} (${unitSalePrice}) is below minimum allowed: ${product.minSalePrice}`
                 });
             }
 
-            const itemTotal = item.unitSalePrice * item.quantity;
+            const itemTotal = unitSalePrice * item.quantity;
             totalAmount += itemTotal;
 
             saleItems.push({
-                product: item.product,
+                product: product._id,
                 quantity: item.quantity,
                 unitMrp: product.mrp,
-                unitSalePrice: item.unitSalePrice,
+                unitSalePrice: unitSalePrice,
                 total: itemTotal
+            });
+
+            // Track stock update for potential rollback
+            stockUpdates.push({
+                productId: product._id,
+                quantity: item.quantity
             });
 
             // Update product stock immediately
             await Product.findByIdAndUpdate(
-                item.product,
+                product._id,
                 { $inc: { stock: -item.quantity } }
             );
         }
@@ -93,13 +121,107 @@ exports.createSale = async (req, res, next) => {
         // Get populated sale for response
         const populatedSale = await Sale.findById(sale._id)
             .populate('customer', 'name phone')
-            .populate('items.product', 'name sku')
+            .populate('items.product', 'name sku barcode mrp minSalePrice stock')
             .populate('salesPerson', 'name')
             .lean();
 
         res.status(201).json({
             success: true,
-            data: populatedSale
+            data: populatedSale,
+            message: 'Sale completed successfully'
+        });
+
+    } catch (error) {
+        // Attempt to rollback stock changes if sale creation fails
+        if (error.name !== 'ValidationError') {
+            for (const update of stockUpdates) {
+                await Product.findByIdAndUpdate(
+                    update.productId,
+                    { $inc: { stock: update.quantity } }
+                ).catch(err => console.error('Stock rollback failed:', err));
+            }
+        }
+        next(error);
+    }
+};
+// Add to saleController.js
+exports.lookupProductByBarcode = async (req, res, next) => {
+    try {
+        const { barcode } = req.params;
+        
+        const product = await Product.findOne({ 
+            barcode: barcode.trim(),
+            isActive: true 
+        })
+        .select('name sku barcode mrp minSalePrice stock images')
+        .lean();
+
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+        }
+
+        // Add calculated fields for POS
+        product.maxQuantity = product.stock; // For quantity validation
+        product.defaultPrice = product.mrp;   // Default selling price
+
+        res.json({
+            success: true,
+            data: product
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+// Add to saleController.js
+exports.getTodaySales = async (req, res, next) => {
+    try {
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        
+        const endOfDay = new Date();
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const [sales, summary] = await Promise.all([
+            Sale.find({
+                saleDate: { $gte: startOfDay, $lte: endOfDay }
+            })
+            .populate('items.product', 'name')
+            .sort({ saleDate: -1 })
+            .lean(),
+
+            Sale.aggregate([
+                {
+                    $match: {
+                        saleDate: { $gte: startOfDay, $lte: endOfDay }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalSales: { $sum: 1 },
+                        totalRevenue: { $sum: '$totalAmount' },
+                        totalItems: { $sum: { $sum: '$items.quantity' } },
+                        averageSale: { $avg: '$totalAmount' }
+                    }
+                }
+            ])
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                sales,
+                summary: summary[0] || {
+                    totalSales: 0,
+                    totalRevenue: 0,
+                    totalItems: 0,
+                    averageSale: 0
+                }
+            }
         });
 
     } catch (error) {

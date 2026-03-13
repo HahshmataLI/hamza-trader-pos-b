@@ -5,7 +5,9 @@ const {
     getSale,
     getSalesAnalytics,
     returnSale,
-    cancelSale
+    cancelSale,
+    lookupProductByBarcode,
+    getTodaySales 
 } = require('../controllers/saleController');
 const { protect } = require('../middleware/auth');
 
@@ -21,5 +23,6 @@ router.get('/analytics', getSalesAnalytics);
 router.post('/:saleId/return', returnSale);
 router.post('/:saleId/cancel', cancelSale);
 router.get('/:id', getSale);
-
+router.get('/lookup/barcode/:barcode', lookupProductByBarcode);
+router.get('/today', getTodaySales);
 module.exports = router;
