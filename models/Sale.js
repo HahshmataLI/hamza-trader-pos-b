@@ -1,3 +1,4 @@
+// models/Sale.js - Updated with paymentStatus logic
 const mongoose = require('mongoose');
 
 const saleItemSchema = new mongoose.Schema({
@@ -76,7 +77,10 @@ const saleSchema = new mongoose.Schema({
     paymentStatus: {
         type: String,
         enum: ['Pending', 'Paid', 'Partially Paid', 'Refunded'],
-        default: 'Paid'
+        default: function() {
+            // Set default based on payment method
+            return this.paymentMethod === 'Credit' ? 'Pending' : 'Paid';
+        }
     },
     saleDate: {
         type: Date,
