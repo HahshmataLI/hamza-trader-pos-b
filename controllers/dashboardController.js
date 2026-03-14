@@ -1,4 +1,4 @@
-// controllers/dashboardController.js - Updated to exclude cancelled sales
+// controllers/dashboardController.js - Fixed profit calculation to use actual sale price
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
@@ -38,165 +38,145 @@ exports.getDashboardData = async (req, res, next) => {
             inventorySummary,
             customerStats
         ] = await Promise.all([
-            // Today's detailed stats with profit - EXCLUDE CANCELLED
+            // Today's detailed stats with profit - USING ACTUAL SALE PRICE
             Sale.aggregate([
                 { 
                     $match: { 
                         saleDate: { $gte: startOfToday },
-                        status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                        status: { $ne: 'Cancelled' },
+                        paymentStatus: 'Paid'
                     } 
                 },
+                { $unwind: '$items' }, // Unwind items first
                 {
                     $lookup: {
                         from: 'products',
                         localField: 'items.product',
                         foreignField: '_id',
-                        as: 'productDetails'
+                        as: 'productInfo'
                     }
                 },
+                { $unwind: '$productInfo' },
                 {
                     $group: {
                         _id: null,
-                        revenue: { $sum: '$totalAmount' },
+                        revenue: { $sum: '$items.total' }, // Sum item totals
                         salesCount: { $sum: 1 },
                         profit: {
                             $sum: {
-                                $sum: {
-                                    $map: {
-                                        input: '$items',
-                                        as: 'item',
-                                        in: {
-                                            $multiply: [
-                                                { $subtract: ['$$item.unitSalePrice', { $arrayElemAt: ['$productDetails.costPrice', 0] }] },
-                                                '$$item.quantity'
-                                            ]
-                                        }
-                                    }
-                                }
+                                $multiply: [
+                                    { $subtract: ['$items.unitSalePrice', '$productInfo.costPrice'] },
+                                    '$items.quantity'
+                                ]
                             }
                         },
-                        itemsSold: { $sum: { $sum: '$items.quantity' } }
+                        itemsSold: { $sum: '$items.quantity' }
                     }
                 }
             ]),
             
-            // This week's stats - EXCLUDE CANCELLED
+            // This week's stats - USING ACTUAL SALE PRICE
             Sale.aggregate([
                 { 
                     $match: { 
                         saleDate: { $gte: startOfWeek },
-                        status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                        status: { $ne: 'Cancelled' },
+                        paymentStatus: 'Paid'
                     } 
                 },
+                { $unwind: '$items' },
                 {
                     $lookup: {
                         from: 'products',
                         localField: 'items.product',
                         foreignField: '_id',
-                        as: 'productDetails'
+                        as: 'productInfo'
                     }
                 },
+                { $unwind: '$productInfo' },
                 {
                     $group: {
                         _id: null,
-                        revenue: { $sum: '$totalAmount' },
+                        revenue: { $sum: '$items.total' },
                         salesCount: { $sum: 1 },
                         profit: {
                             $sum: {
-                                $sum: {
-                                    $map: {
-                                        input: '$items',
-                                        as: 'item',
-                                        in: {
-                                            $multiply: [
-                                                { $subtract: ['$$item.unitSalePrice', { $arrayElemAt: ['$productDetails.costPrice', 0] }] },
-                                                '$$item.quantity'
-                                            ]
-                                        }
-                                    }
-                                }
+                                $multiply: [
+                                    { $subtract: ['$items.unitSalePrice', '$productInfo.costPrice'] },
+                                    '$items.quantity'
+                                ]
                             }
                         }
                     }
                 }
             ]),
             
-            // This month's stats - EXCLUDE CANCELLED
+            // This month's stats - USING ACTUAL SALE PRICE
             Sale.aggregate([
                 { 
                     $match: { 
                         saleDate: { $gte: startOfMonth },
-                        status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                        status: { $ne: 'Cancelled' },
+                        paymentStatus: 'Paid'
                     } 
                 },
+                { $unwind: '$items' },
                 {
                     $lookup: {
                         from: 'products',
                         localField: 'items.product',
                         foreignField: '_id',
-                        as: 'productDetails'
+                        as: 'productInfo'
                     }
                 },
+                { $unwind: '$productInfo' },
                 {
                     $group: {
                         _id: null,
-                        revenue: { $sum: '$totalAmount' },
+                        revenue: { $sum: '$items.total' },
                         salesCount: { $sum: 1 },
                         profit: {
                             $sum: {
-                                $sum: {
-                                    $map: {
-                                        input: '$items',
-                                        as: 'item',
-                                        in: {
-                                            $multiply: [
-                                                { $subtract: ['$$item.unitSalePrice', { $arrayElemAt: ['$productDetails.costPrice', 0] }] },
-                                                '$$item.quantity'
-                                            ]
-                                        }
-                                    }
-                                }
+                                $multiply: [
+                                    { $subtract: ['$items.unitSalePrice', '$productInfo.costPrice'] },
+                                    '$items.quantity'
+                                ]
                             }
                         }
                     }
                 }
             ]),
             
-            // This year's stats - EXCLUDE CANCELLED
+            // This year's stats - USING ACTUAL SALE PRICE
             Sale.aggregate([
                 { 
                     $match: { 
                         saleDate: { $gte: startOfYear },
-                        status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                        status: { $ne: 'Cancelled' },
+                        paymentStatus: 'Paid'
                     } 
                 },
+                { $unwind: '$items' },
                 {
                     $lookup: {
                         from: 'products',
                         localField: 'items.product',
                         foreignField: '_id',
-                        as: 'productDetails'
+                        as: 'productInfo'
                     }
                 },
+                { $unwind: '$productInfo' },
                 {
                     $group: {
                         _id: null,
-                        revenue: { $sum: '$totalAmount' },
+                        revenue: { $sum: '$items.total' },
                         salesCount: { $sum: 1 },
                         profit: {
                             $sum: {
-                                $sum: {
-                                    $map: {
-                                        input: '$items',
-                                        as: 'item',
-                                        in: {
-                                            $multiply: [
-                                                { $subtract: ['$$item.unitSalePrice', { $arrayElemAt: ['$productDetails.costPrice', 0] }] },
-                                                '$$item.quantity'
-                                            ]
-                                        }
-                                    }
-                                }
+                                $multiply: [
+                                    { $subtract: ['$items.unitSalePrice', '$productInfo.costPrice'] },
+                                    '$items.quantity'
+                                ]
                             }
                         }
                     }
@@ -213,9 +193,12 @@ exports.getDashboardData = async (req, res, next) => {
             .limit(10)
             .lean(),
             
-            // Top selling products - EXCLUDE CANCELLED
+            // Top selling products - USING ACTUAL SALE PRICE
             Sale.aggregate([
-                { $match: { status: { $ne: 'Cancelled' } } }, // Exclude cancelled sales
+                { $match: { 
+                    status: { $ne: 'Cancelled' },
+                    paymentStatus: 'Paid'
+                } },
                 { $unwind: '$items' },
                 {
                     $group: {
@@ -257,7 +240,7 @@ exports.getDashboardData = async (req, res, next) => {
             Sale.countDocuments({
                 paymentMethod: 'Credit',
                 paymentStatus: 'Pending',
-                status: 'Completed' // Only completed, not cancelled
+                status: 'Completed'
             }),
             
             // Inventory summary
@@ -288,21 +271,26 @@ exports.getDashboardData = async (req, res, next) => {
             ])
         ]);
 
-        // Get recent sales with profit - EXCLUDE CANCELLED
+        // Get recent sales with profit - USING ACTUAL SALE PRICE
         const recentSales = await Sale.find({ 
-            status: { $ne: 'Cancelled' } // Exclude cancelled sales
+            status: { $ne: 'Cancelled' },
+            paymentStatus: 'Paid'
         })
         .populate('customer', 'name')
-        .populate('items.product', 'name costPrice')
+        .populate({
+            path: 'items.product',
+            select: 'name costPrice'
+        })
         .select('invoiceNumber totalAmount saleDate paymentMethod paymentStatus items')
         .sort({ saleDate: -1 })
         .limit(10)
         .lean();
 
-        // Calculate profit for recent sales
+        // Calculate profit for recent sales using actual sale price
         const recentSalesWithProfit = recentSales.map(sale => {
             const totalProfit = sale.items.reduce((profit, item) => {
                 const product = item.product;
+                // Use item.unitSalePrice (actual sale price) not product.mrp
                 return profit + ((item.unitSalePrice - (product?.costPrice || 0)) * item.quantity);
             }, 0);
             
@@ -318,13 +306,13 @@ exports.getDashboardData = async (req, res, next) => {
             };
         });
 
-        // Calculate pending credit amount separately (only completed, not cancelled)
+        // Calculate pending credit amount separately
         const pendingCreditResult = await Sale.aggregate([
             {
                 $match: {
                     paymentMethod: 'Credit',
                     paymentStatus: 'Pending',
-                    status: 'Completed' // Only completed, not cancelled
+                    status: 'Completed'
                 }
             },
             {
@@ -336,12 +324,12 @@ exports.getDashboardData = async (req, res, next) => {
             }
         ]);
 
-        // Sales by payment method for current month - EXCLUDE CANCELLED
+        // Sales by payment method for current month
         const salesByPaymentMethod = await Sale.aggregate([
             { 
                 $match: { 
                     saleDate: { $gte: startOfMonth },
-                    status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                    status: { $ne: 'Cancelled' }
                 } 
             },
             {
@@ -353,14 +341,15 @@ exports.getDashboardData = async (req, res, next) => {
             }
         ]);
 
-        // Daily sales for chart (last 7 days) - EXCLUDE CANCELLED
+        // Daily sales for chart (last 7 days) - USING ACTUAL SALE PRICE
         const dailySales = await Sale.aggregate([
             {
                 $match: {
                     saleDate: {
                         $gte: sevenDaysAgo
                     },
-                    status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                    status: { $ne: 'Cancelled' },
+                    paymentStatus: 'Paid'
                 }
             },
             {
@@ -433,7 +422,7 @@ exports.getDashboardData = async (req, res, next) => {
     }
 };
 
-// Get sales chart data - EXCLUDE CANCELLED
+// Get sales chart data
 exports.getSalesChartData = async (req, res, next) => {
     try {
         const { period = 'week' } = req.query;
@@ -462,7 +451,8 @@ exports.getSalesChartData = async (req, res, next) => {
             {
                 $match: {
                     saleDate: { $gte: startDate },
-                    status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                    status: { $ne: 'Cancelled' },
+                    paymentStatus: 'Paid'
                 }
             },
             {
@@ -487,7 +477,7 @@ exports.getSalesChartData = async (req, res, next) => {
     }
 };
 
-// Get summary cards data - EXCLUDE CANCELLED
+// Get summary cards data
 exports.getSummaryCards = async (req, res, next) => {
     try {
         const today = new Date();
@@ -504,7 +494,8 @@ exports.getSummaryCards = async (req, res, next) => {
                 { 
                     $match: { 
                         saleDate: { $gte: startOfToday },
-                        status: { $ne: 'Cancelled' } // Exclude cancelled sales
+                        status: { $ne: 'Cancelled' },
+                        paymentStatus: 'Paid'
                     } 
                 },
                 {
@@ -524,7 +515,7 @@ exports.getSummaryCards = async (req, res, next) => {
             Sale.countDocuments({
                 paymentMethod: 'Credit',
                 paymentStatus: 'Pending',
-                status: 'Completed' // Only completed, not cancelled
+                status: 'Completed'
             })
         ]);
 
