@@ -1,65 +1,36 @@
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const cloudinary = require('../config/cloudinary');
 
-// Create uploads directory if it doesn't exist
-const uploadDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Configure temporary storage
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        let folder = 'temp'; // Store temporarily
-        
-        const dir = path.join(uploadDir, folder);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        cb(null, dir);
+// Configure Cloudinary storage
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'products', // folder in Cloudinary
+        allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+        transformation: [{ width: 800, height: 800, crop: 'limit' }] // optional resizing
     },
-    filename: (req, file, cb) => {
-        const uniqueName = `temp-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
-        cb(null, uniqueName);
-    }
 });
-
-// File filter
-const fileFilter = (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    
-    if (allowedTypes.includes(file.mimetype)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Only JPEG, PNG and WebP images are allowed'), false);
-    }
-};
 
 const upload = multer({
     storage: storage,
-    limits: {
-        fileSize: 10 * 1024 * 1024 // 10MB max (we'll compress anyway)
-    },
-    fileFilter: fileFilter
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
 });
 
-// Export upload configurations
-exports.uploadProductImages = upload.array('images', 5);
-exports.uploadCategoryImage = upload.single('image');
-
-// Error handling for multer
+// Exports
+exports.uploadProductImages = upload.array('images', 5); // multiple images
+exports.uploadCategoryImage = upload.single('image'); // single image
 exports.handleUploadError = (err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
             return res.status(400).json({
                 success: false,
-                error: 'File too large. Maximum size is 10MB'
+                error: 'File too large. Maximum size is 10MB',
             });
         }
         return res.status(400).json({
             success: false,
-            error: err.message
+            error: err.message,
         });
     }
     next(err);

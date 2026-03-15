@@ -26,105 +26,34 @@ const generateUniqueBarcode = async () => {
     return barcode;
 };
 
-exports.createProduct = async (req, res, next) => {
+exports.createProduct = async (req, res) => {
     try {
-        const productData = req.body;
+        // Uploads from Cloudinary via multer
+        const images = req.files ? req.files.map(file => file.path) : [];
 
-        // Validate category exists and get its attributes
-        const category = await Category.findById(productData.category);
-        if (!category) {
-            return res.status(400).json({
-                success: false,
-                error: 'Category not found'
-            });
-        }
-
-        // Get all attributes (including parent categories)
-        let allAttributes = [...category.attributes];
-        if (category.parent) {
-            const parentCategory = await Category.findById(category.parent);
-            if (parentCategory && parentCategory.attributes) {
-                allAttributes = [...parentCategory.attributes, ...allAttributes];
-            }
-        }
-
-        // Handle barcode
-        if (productData.barcode) {
-            // Format and validate barcode
-            productData.barcode = barcodeService.formatBarcode(productData.barcode);
-            
-            // Check if barcode already exists
-            const existingProduct = await Product.findOne({ barcode: productData.barcode });
-            if (existingProduct) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Barcode already exists'
-                });
-            }
-        } else {
-            // Generate unique barcode
-            productData.barcode = await generateUniqueBarcode();
-        }
-
-        // Handle uploaded images with optimization
-        if (req.files && req.files.length > 0) {
-            const optimizedImages = await imageService.optimizeMultipleImages(req.files, {
-                width: 800,
-                height: 800,
-                quality: 80
-            });
-            productData.images = optimizedImages;
-        }
-
-        // Parse attributes if sent as string
-        if (typeof productData.attributes === 'string') {
-            try {
-                productData.attributes = JSON.parse(productData.attributes);
-            } catch (e) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Invalid attributes format'
-                });
-            }
-        }
-
-        // Validate required attributes
-        const missingAttributes = allAttributes
-            .filter(attr => attr.required && !productData.attributes[attr.name])
-            .map(attr => attr.label || attr.name);
-
-        if (missingAttributes.length > 0) {
-            // Clean up uploaded images if validation fails
-            if (productData.images && productData.images.length > 0) {
-                await imageService.deleteMultipleImages(productData.images);
-            }
-            
-            return res.status(400).json({
-                success: false,
-                error: `Missing required attributes: ${missingAttributes.join(', ')}`
-            });
-        }
-
-        const product = await Product.create(productData);
-
-        const populatedProduct = await Product.findById(product._id)
-            .populate('category', 'name level')
-            .lean();
+        const product = await Product.create({
+            name: req.body.name,
+            sku: req.body.sku,
+            barcode: req.body.barcode || null,
+            category: req.body.category,
+            costPrice: req.body.costPrice,
+            mrp: req.body.mrp,
+            minSalePrice: req.body.minSalePrice,
+            stock: req.body.stock || 0,
+            minStockLevel: req.body.minStockLevel || 5,
+            description: req.body.description || '',
+            attributes: req.body.attributes || {},
+            images,
+            isActive: req.body.isActive !== undefined ? req.body.isActive : true
+        });
 
         res.status(201).json({
             success: true,
-            data: populatedProduct,
-            message: 'Product created successfully'
+            product
         });
-
     } catch (error) {
-        // Clean up any uploaded images if there's an error
-        if (req.files && req.files.length > 0) {
-            await imageService.deleteMultipleImages(
-                req.files.map(f => `/uploads/products/${f.filename}`)
-            ).catch(err => console.error('Error cleaning up images:', err));
-        }
-        next(error);
+        console.error(error);
+        res.status(500).json({ success: false, error: error.message });
     }
 };
 
@@ -284,96 +213,41 @@ exports.getProductByBarcode = async (req, res, next) => {
     }
 };
 
-exports.updateProduct = async (req, res, next) => {
+exports.updateProduct = async (req, res) => {
     try {
-        let product = await Product.findById(req.params.id);
-
+        const product = await Product.findById(req.params.id);
         if (!product) {
-            return res.status(404).json({
-                success: false,
-                error: 'Product not found'
-            });
+            return res.status(404).json({ success: false, error: 'Product not found' });
         }
 
-        // Store old images for cleanup if new ones are uploaded
-        const oldImages = [...(product.images || [])];
+        // Update fields if present
+        product.name = req.body.name || product.name;
+        product.sku = req.body.sku || product.sku;
+        product.barcode = req.body.barcode !== undefined ? req.body.barcode : product.barcode;
+        product.category = req.body.category || product.category;
+        product.costPrice = req.body.costPrice || product.costPrice;
+        product.mrp = req.body.mrp || product.mrp;
+        product.minSalePrice = req.body.minSalePrice || product.minSalePrice;
+        product.stock = req.body.stock !== undefined ? req.body.stock : product.stock;
+        product.minStockLevel = req.body.minStockLevel || product.minStockLevel;
+        product.description = req.body.description || product.description;
+        product.attributes = req.body.attributes || product.attributes;
+        product.isActive = req.body.isActive !== undefined ? req.body.isActive : product.isActive;
 
-        // Handle barcode update
-        if (req.body.barcode && req.body.barcode !== product.barcode) {
-            // Format barcode
-            req.body.barcode = barcodeService.formatBarcode(req.body.barcode);
-            
-            // Check if new barcode already exists
-            const existingProduct = await Product.findOne({ 
-                barcode: req.body.barcode,
-                _id: { $ne: req.params.id }
-            });
-            
-            if (existingProduct) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Barcode already exists'
-                });
-            }
-        }
-
-        // Handle image updates
+        // If new images uploaded, replace the array
         if (req.files && req.files.length > 0) {
-            // Optimize and save new images
-            const optimizedImages = await imageService.optimizeMultipleImages(req.files, {
-                width: 800,
-                height: 800,
-                quality: 80
-            });
-            
-            // Combine with existing images if not replacing
-            if (req.body.replaceImages === 'true') {
-                req.body.images = optimizedImages;
-                // Delete old images
-                if (oldImages.length > 0) {
-                    await imageService.deleteMultipleImages(oldImages);
-                }
-            } else {
-                req.body.images = [...oldImages, ...optimizedImages];
-            }
+            product.images = req.files.map(file => file.path);
         }
 
-        // Parse attributes if sent as string
-        if (req.body.attributes && typeof req.body.attributes === 'string') {
-            try {
-                req.body.attributes = JSON.parse(req.body.attributes);
-            } catch (e) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Invalid attributes format'
-                });
-            }
-        }
+        await product.save();
 
-        // Update product
-        product = await Product.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            {
-                new: true,
-                runValidators: true
-            }
-        ).populate('category', 'name');
-
-        res.json({
+        res.status(200).json({
             success: true,
-            data: product,
-            message: 'Product updated successfully'
+            product
         });
-
     } catch (error) {
-        // Clean up any newly uploaded images if there's an error
-        if (req.files && req.files.length > 0) {
-            await imageService.deleteMultipleImages(
-                req.files.map(f => `/uploads/products/${f.filename}`)
-            ).catch(err => console.error('Error cleaning up images:', err));
-        }
-        next(error);
+        console.error(error);
+        res.status(500).json({ success: false, error: error.message });
     }
 };
 
